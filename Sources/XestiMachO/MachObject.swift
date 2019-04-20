@@ -79,7 +79,6 @@ public final class MachObject {
 
             item = arch
             mhOffset = arch.offset
-
         } else {
             count = MemoryLayout<fat_arch>.size
 
@@ -91,7 +90,6 @@ public final class MachObject {
 
             item = arch
             mhOffset = UInt64(arch.offset)
-
         }
 
         guard

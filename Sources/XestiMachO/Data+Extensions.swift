@@ -11,8 +11,8 @@ public extension Data {
             count >= MemoryLayout<T>.size
             else { return nil }
 
-        let instance: T = withUnsafeBytes {
-            return $0.pointee
+        let instance: T? = withUnsafeBytes {
+            $0.baseAddress?.assumingMemoryBound(to: T.self).pointee
         }
 
         return instance

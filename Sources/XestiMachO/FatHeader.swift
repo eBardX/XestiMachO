@@ -4,13 +4,13 @@ import MachO
 
 internal struct FatHeader: ItemDescriptor {
 
-    // MARK: Public Initializers
+    // MARK: Internal Initializers
 
-    public init?(magic: Magic,
-                 offset: UInt64,
-                 count: Int,
-                 item: Any,
-                 archs: [FatArch]) {
+    internal init?(magic: Magic,
+                   offset: UInt64,
+                   count: Int,
+                   item: Any,
+                   archs: [FatArch]) {
         guard
             magic.isFat,
             count > 0,
@@ -24,15 +24,15 @@ internal struct FatHeader: ItemDescriptor {
         self.offset = offset
     }
 
-    // MARK: Public Instance Properties
+    // MARK: Internal Instance Properties
 
-    public let archs: [FatArch]
-    public let count: Int
-    public let item: Any
-    public let magic: Magic
-    public let offset: UInt64
+    internal let archs: [FatArch]
+    internal let count: Int
+    internal let item: Any
+    internal let magic: Magic
+    internal let offset: UInt64
 
-    public var architecture: MachObject.Architecture {
+    internal var architecture: MachObject.Architecture {
         return .universal(archs.map { $0.header.architecture })
     }
 }

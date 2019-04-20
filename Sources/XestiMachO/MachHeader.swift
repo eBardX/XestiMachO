@@ -4,12 +4,12 @@ import MachO
 
 internal struct MachHeader: ItemDescriptor {
 
-    // MARK: Public Initializers
+    // MARK: Internal Initializers
 
-    public init?(magic: Magic,
-                 offset: UInt64,
-                 count: Int,
-                 item: Any) {
+    internal init?(magic: Magic,
+                   offset: UInt64,
+                   count: Int,
+                   item: Any) {
         guard
             !magic.isFat,
             count > 0,
@@ -23,14 +23,14 @@ internal struct MachHeader: ItemDescriptor {
         self.offset = offset
     }
 
-    // MARK: Public Instance Properties
+    // MARK: Internal Instance Properties
 
-    public let count: Int
-    public let item: Any
-    public let magic: Magic
-    public let offset: UInt64
+    internal let count: Int
+    internal let item: Any
+    internal let magic: Magic
+    internal let offset: UInt64
 
-    public var architecture: MachObject.Architecture {
+    internal var architecture: MachObject.Architecture {
         switch item {
         case let header as mach_header:
             return .init(cpuType: header.cputype,

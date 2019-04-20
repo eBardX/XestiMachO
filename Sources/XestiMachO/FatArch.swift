@@ -4,12 +4,12 @@ import MachO
 
 internal struct FatArch: ItemDescriptor {
 
-    // MARK: Public Initializers
+    // MARK: Internal Initializers
 
-    public init?(offset: UInt64,
-                 count: Int,
-                 item: Any,
-                 header: MachHeader) {
+    internal init?(offset: UInt64,
+                   count: Int,
+                   item: Any,
+                   header: MachHeader) {
         guard
             count > 0,
             (item is fat_arch
@@ -22,10 +22,10 @@ internal struct FatArch: ItemDescriptor {
         self.offset = offset
     }
 
-    // MARK: Public Instance Properties
+    // MARK: Internal Instance Properties
 
-    public let count: Int
-    public let header: MachHeader
-    public let item: Any
-    public let offset: UInt64
+    internal let count: Int
+    internal let header: MachHeader
+    internal let item: Any
+    internal let offset: UInt64
 }
