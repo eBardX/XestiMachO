@@ -1,101 +1,19 @@
 // © 2019 J. G. Pusey (see LICENSE.md)
 
-import MachO
+public class LoadCommand: ItemDescriptor {
 
-internal struct LoadCommand: ItemDescriptor {
+    // MARK: Public Initializers
 
-    // MARK: Internal Initializers
-
-    internal init?(kind: Kind,
-                   offset: UInt64,
-                   count: Int,
-                   item: Any) {
-        guard
-            count > 0,
-            (item is dylib_command
-                || item is linkedit_data_command
-                || item is load_command
-                || item is segment_command
-                || item is segment_command_64
-                || item is symtab_command)
-            else { return nil }
-
-        self.count = count
-        self.item = item
+    public init(offset: UInt64,
+                size: Int,
+                kind: Kind) throws {
         self.kind = kind
-        self.offset = offset
+
+        try super.init(offset: offset,
+                       size: size)
     }
 
-    // MARK: Internal Instance Properties
+    // MARK: Public Instance Properties
 
-    internal let count: Int
-    internal let item: Any
-    internal let kind: Kind
-    internal let offset: UInt64
+    public let kind: Kind
 }
-
-//public class LoadCommand {
-//
-//    // MARK: Public Type Methods
-//
-//    public static func parse(data: Data,
-//                             isSwapped: Bool) -> LoadCommand? {
-//        guard
-//            let command = data.extractLoadCommand(isSwapped)
-//            else { return nil }
-//
-//        switch Int32(command.cmd) {
-//        case LC_CODE_SIGNATURE:
-//            guard
-//                let command = data.extractLinkeditDataCommand(isSwapped)
-//                else { return nil }
-//
-//            return LinkeditDataCommand(raw: command)
-//
-//        case LC_LOAD_DYLIB,
-//             Int32(LC_LOAD_WEAK_DYLIB):
-//            guard
-//                let command = data.extractDylibCommand(isSwapped)
-//                else { return nil }
-//
-//            return DylibCommand(raw: command)
-//
-//        case LC_SEGMENT:
-//            guard
-//                let command = data.extractSegmentCommand(isSwapped)
-//                else { return nil }
-//
-//            return SegmentCommand(raw: command)
-//
-//        case LC_SEGMENT_64:
-//            guard
-//                let command = data.extractSegmentCommand64(isSwapped)
-//                else { return nil }
-//
-//            return SegmentCommand(raw64: command)
-//
-//        default:
-//            return LoadCommand(raw: command)
-//        }
-//    }
-//
-//    // MARK: Public Initializers
-//
-//    public init(raw: load_command) {
-//        self.kind = raw.cmd
-//        self.size = raw.cmdsize
-//    }
-//
-//    // MARK: Public Instance Properties
-//
-//    public let kind: UInt32
-//    public let size: UInt32
-//
-//    // MARK: Internal Initializers
-//
-//    internal init(kind: UInt32,
-//                  size: UInt32) {
-//        self.kind = kind
-//        self.size = size
-//    }
-//}

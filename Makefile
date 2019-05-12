@@ -3,7 +3,7 @@
 all: clean update build
 
 build:
-	@ swift build -c release -Xswiftc -static-stdlib
+	@ swift build -c release
 
 clean:
 	@ swift package clean

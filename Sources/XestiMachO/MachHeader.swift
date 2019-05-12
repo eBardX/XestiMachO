@@ -2,46 +2,74 @@
 
 import MachO
 
-internal struct MachHeader: ItemDescriptor {
+public class MachHeader: ItemDescriptor {
 
-    // MARK: Internal Initializers
+    // MARK: Public Initializers
 
-    internal init?(magic: Magic,
-                   offset: UInt64,
-                   count: Int,
-                   item: Any) {
+    public init(offset: UInt64,
+                size: Int,
+                magic: Magic,
+                ptr: UnsafeMutablePointer<mach_header>,
+                commands: [LoadCommand]) throws {
         guard
-            !magic.isFat,
-            count > 0,
-            (item is mach_header
-                || item is mach_header_64)
-            else { return nil }
+            !magic.isFat
+            else { throw MachObject.Error.badMachHeader }
 
-        self.count = count
-        self.item = item
+        self.commandCount = Int(ptr.pointee.ncmds)
+        self.commands = commands
+        self.cpuSubtype = CPUSubtype(UInt64(ptr.pointee.cputype) << 32 | UInt64(ptr.pointee.cpusubtype))
+        self.cpuType = CPUType(UInt32(ptr.pointee.cputype))
+        self.fileType = FileType(ptr.pointee.filetype)
+        self.flags = Flags(rawValue: ptr.pointee.flags)
         self.magic = magic
-        self.offset = offset
+        self.totalCommandSize = Int(ptr.pointee.sizeofcmds)
+
+        try super.init(offset: offset,
+                       size: size)
     }
 
-    // MARK: Internal Instance Properties
+    public init(offset: UInt64,
+                size: Int,
+                magic: Magic,
+                ptr: UnsafeMutablePointer<mach_header_64>,
+                commands: [LoadCommand]) throws {
+        guard
+            !magic.isFat
+            else { throw MachObject.Error.badMachHeader }
 
-    internal let count: Int
-    internal let item: Any
-    internal let magic: Magic
-    internal let offset: UInt64
+        self.commandCount = Int(ptr.pointee.ncmds)
+        self.commands = commands
+        self.cpuSubtype = CPUSubtype(UInt64(ptr.pointee.cputype) << 32 | UInt64(ptr.pointee.cpusubtype))
+        self.cpuType = CPUType(UInt32(ptr.pointee.cputype))
+        self.fileType = FileType(ptr.pointee.filetype)
+        self.flags = Flags(rawValue: ptr.pointee.flags)
+        self.magic = magic
+        self.totalCommandSize = Int(ptr.pointee.sizeofcmds)
 
-    internal var architecture: MachObject.Architecture {
-        switch item {
-        case let header as mach_header:
-            return .init(cpuType: header.cputype,
-                         cpuSubtype: header.cpusubtype)
+        try super.init(offset: offset,
+                       size: size)
+    }
 
-        case let header as mach_header_64:
-            return .init(cpuType: header.cputype,
-                         cpuSubtype: header.cpusubtype)
+    // MARK: Public Instance Properties
 
-        default:
-            return .unknown
-        }
+    public let commandCount: Int
+    public let commands: [LoadCommand]
+    public let cpuSubtype: CPUSubtype
+    public let cpuType: CPUType
+    public let fileType: FileType
+    public let flags: Flags
+    public let magic: Magic
+    public let totalCommandSize: Int
+}
+
+// MARK: -
+
+public extension MachHeader {
+
+    // MARK: Public Instance Properties
+
+    var architecture: MachObject.Architecture {
+        return .init(cpuType: cpuType,
+                     cpuSubtype: cpuSubtype)
     }
 }

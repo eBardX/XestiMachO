@@ -2,11 +2,11 @@
 
 import MachO
 
-public struct Magic: Equatable, RawRepresentable {
+public struct Magic: Equatable, Hashable, RawRepresentable {
 
     // MARK: Public Initializers
 
-    public init?(rawValue: UInt32) {
+    public init(_ rawValue: UInt32) throws {
         switch rawValue {
         case FAT_CIGAM,
              FAT_CIGAM_64,
@@ -19,15 +19,26 @@ public struct Magic: Equatable, RawRepresentable {
             self.rawValue = rawValue
 
         default:
-            return nil
+            throw MachObject.Error.badMagic
         }
+    }
+
+    public init?(rawValue: UInt32) {
+        try? self.init(rawValue)
     }
 
     // MARK: Public Instance Properties
 
     public let rawValue: UInt32
+}
 
-    public var is64Bit: Bool {
+// MARK: -
+
+public extension Magic {
+
+    // MARK: Public Instance Properties
+
+    var is64Bit: Bool {
         switch rawValue {
         case FAT_CIGAM_64,
              FAT_MAGIC_64,
@@ -40,7 +51,7 @@ public struct Magic: Equatable, RawRepresentable {
         }
     }
 
-    public var isFat: Bool {
+    var isFat: Bool {
         switch rawValue {
         case FAT_CIGAM,
              FAT_CIGAM_64,
@@ -53,7 +64,7 @@ public struct Magic: Equatable, RawRepresentable {
         }
     }
 
-    public var isSwapped: Bool {
+    var isSwapped: Bool {
         switch rawValue {
         case FAT_CIGAM,
              FAT_CIGAM_64,
@@ -63,6 +74,33 @@ public struct Magic: Equatable, RawRepresentable {
 
         default:
             return false
+        }
+    }
+}
+
+// MARK: - CustomStringConvertible
+
+extension Magic: CustomStringConvertible {
+    public var description: String {
+        switch rawValue {
+        case FAT_CIGAM,
+             FAT_MAGIC:
+            return "FAT_MAGIC"
+
+        case FAT_CIGAM_64,
+             FAT_MAGIC_64:
+            return "FAT_MAGIC_64"
+
+        case MH_CIGAM,
+             MH_MAGIC:
+            return "MH_MAGIC"
+
+        case MH_CIGAM_64,
+             MH_MAGIC_64:
+            return "MH_MAGIC_64"
+
+        default:
+            return "'\(rawValue)'"
         }
     }
 }
