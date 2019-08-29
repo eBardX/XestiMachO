@@ -1,38 +1,48 @@
 // © 2019 J. G. Pusey (see LICENSE.md)
 
+import Foundation
 import MachO
 
-internal struct FatHeader: ItemDescriptor {
+public final class FatHeader {
 
-    // MARK: Internal Initializers
+    // MARK: Public Initializers
 
-    internal init?(magic: Magic,
-                   offset: UInt64,
-                   count: Int,
-                   item: Any,
-                   archs: [FatArch]) {
-        guard
-            magic.isFat,
-            count > 0,
-            item is fat_header
-            else { return nil }
-
-        self.archs = archs
-        self.count = count
+    public init(item: Item<fat_header>,
+                magic: Magic) throws {
         self.item = item
         self.magic = magic
-        self.offset = offset
+    }
+
+    // MARK: Public Instance Properties
+
+    public let magic: Magic
+
+    public var archCount: UInt32 {
+        return item.ptr.pointee.nfat_arch
+    }
+
+    public var offset: UInt64 {
+        return item.offset
+    }
+
+    public var size: UInt32 {
+        return item.size
+    }
+
+    // MARK: Public Instance Methods
+
+    public func copy() throws -> FatHeader {
+        return try .init(item: item.copy(),
+                         magic: magic)
     }
 
     // MARK: Internal Instance Properties
 
-    internal let archs: [FatArch]
-    internal let count: Int
-    internal let item: Any
-    internal let magic: Magic
-    internal let offset: UInt64
-
-    internal var architecture: MachObject.Architecture {
-        return .universal(archs.map { $0.header.architecture })
+    internal var rawData: Data {
+        return item.rawData as Data
     }
+
+    // MARK: Private Instance Properties
+
+    private let item: Item<fat_header>
 }

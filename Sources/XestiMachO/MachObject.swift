@@ -1,216 +1,456 @@
 // © 2019 J. G. Pusey (see LICENSE.md)
 
-import Foundation
-import MachO
-import XestiPath
+ import Foundation
+ import XestiPath
 
 public final class MachObject {
 
-    // MARK: Public Initializers
+    // MARK: Public Type Methods
 
-    public init(path: Path,
-                update: Bool) throws {
-        let tmpFileHandle = update ?
-            try FileHandle(forUpdating: path.fileURL) :
+    public static func determineArchitecture(_ path: Path) throws -> Architecture {
+        let fh = try FileHandle(forReadingFrom: path.fileURL)
+        let magic = try fh.readMagic(at: 0)
+
+        if magic.isFat {
+            let header = try fh.readFatHeader(with: magic)
+            let archs = try fh.readFatArchs(for: header)
+
+            return .universal(archs.map { $0.architecture })
+        } else {
+            return try fh.readMachHeader(at: 0,
+                                         with: magic).architecture
+        }
+    }
+
+    public static func load(_ path: Path,
+                            allowUpdates: Bool = false) throws -> MachObject {
+        let fh = /* allowUpdates ?
+             try FileHandle(forUpdating: path.fileURL) : */
             try FileHandle(forReadingFrom: path.fileURL)
 
-        guard
-            let tmpMagic = tmpFileHandle.readMagic(at: 0)
-            else { throw Error.badMagic }
+        let magic = try fh.readMagic(at: 0)
+        let header: Header
 
-        self.fileHandle = tmpFileHandle
-        self.magic = tmpMagic
+        if magic.isFat {
+            let fatHeader = try fh.readFatHeader(with: magic)
+            let archs = try fh.readFatArchs(for: fatHeader)
+
+            var triples: [Triple] = []
+
+            for arch in archs {
+                let mhMagic = try fh.readMagic(at: arch.objectOffset)
+                let machHeader = try fh.readMachHeader(at: arch.objectOffset,
+                                                       with: mhMagic)
+                let loadCommands = try fh.readLoadCommands(for: machHeader)
+
+                triples.append((arch, machHeader, loadCommands))
+            }
+
+            header = .universal(fatHeader, triples)
+        } else {
+            let machHeader = try fh.readMachHeader(at: 0,
+                                                   with: magic)
+            let loadCommands = try fh.readLoadCommands(for: machHeader)
+
+            header = .single(machHeader, loadCommands)
+        }
+
+        return MachObject(path: path,
+                          isReadOnly: !allowUpdates,
+                          fileHandle: fh,
+                          header: header)
     }
 
     // MARK: Public Instance Properties
 
+    public let isReadOnly: Bool
+    public let path: Path
+
     public var architecture: Architecture {
-        _readHeader()
-
-        guard
-            let header = header
-            else { return .unknown }
-
         switch header {
-        case let .single(machHeader):
+        case let .single(machHeader, _):
             return machHeader.architecture
 
-        case let .universal(fatHeader):
-            return fatHeader.architecture
+        case let .universal(_, triples):
+            return .universal(triples.map { $0.arch.architecture })
         }
     }
 
-    public var isUniversal: Bool {
-        return magic.isFat
+    public var isUpdating: Bool {
+        return updatedHeader != nil
     }
+
+    // MARK: Public Instance Methods
+
+    public func beginUpdates() throws {
+        guard
+            updatedHeader == nil
+            else { throw Error.alreadyUpdating }
+
+        switch header {
+        case let .single(machHeader, commands):
+            updatedHeader = .single(try machHeader.copy(),
+                                    try commands.map { try $0.copy() })
+
+        case let .universal(fatHeader, triples):
+            updatedHeader = .universal(try fatHeader.copy(),
+                                       try triples.map { (try $0.arch.copy(),
+                                                          try $0.header.copy(),
+                                                          try $0.commands.map { try $0.copy() })
+                                       })
+        }
+    }
+
+    public func cancelUpdates() throws {
+        guard
+            updatedHeader != nil
+            else { throw Error.notUpdating }
+
+        updatedHeader = nil
+    }
+
+    public func canCommitUpdatesInPlace() throws -> Bool {
+        guard
+            updatedHeader != nil
+            else { throw Error.notUpdating }
+
+        return false
+    }
+
+    public func commitUpdates(to path: Path) throws {
+        guard
+            let dstHeader = updatedHeader
+            else { throw Error.notUpdating }
+
+        if path.exists {
+            try path.remove()
+        }
+
+        let attrs = try self.path.attributes()
+
+        guard
+            path.createFile(attributes: attrs)
+            else { throw Error.badWrite }
+
+        let dstFH = try FileHandle(forUpdating: path.fileURL)
+
+        dstFH.truncateFile(atOffset: 0)
+
+        defer {
+            dstFH.synchronizeFile()
+            dstFH.closeFile()
+        }
+
+        let srcHeader = self.header
+        let srcFH = self.fileHandle
+
+        switch (srcHeader, dstHeader) {
+        case let (.single(srcMachHeader, _),
+                  .single(dstMachHeader, dstCommands)):
+            let srcCopyOffset = srcMachHeader.offset + UInt64(srcMachHeader.size + srcMachHeader.totalCommandSize)
+            let dstCopyOffset = dstMachHeader.offset + UInt64(dstMachHeader.size + dstMachHeader.totalCommandSize)
+            let copySize = UInt32(srcFH.seekToEndOfFile() - srcCopyOffset)
+
+            try _commitSlice(dstFH,
+                             header: dstMachHeader,
+                             commands: dstCommands,
+                             srcCopyOffset: srcCopyOffset,
+                             dstCopyOffset: dstCopyOffset,
+                             copySize: copySize)
+
+        case let (.universal(_, srcTriples),
+                  .universal(dstFatHeader, dstTriples)):
+            guard
+                srcTriples.count == dstTriples.count
+                else { throw Error.corrupt }
+
+            try dstFH.writeFatHeader(dstFatHeader)
+            try dstFH.writeFatArchs(dstTriples.map { $0.arch })
+
+            for (srcTriple, dstTriple) in zip(srcTriples, dstTriples) {
+                let srcMachHeader = srcTriple.header
+                let dstMachHeader = dstTriple.header
+                let srcSkipSize = UInt64(srcMachHeader.size + srcMachHeader.totalCommandSize)
+                let dstSkipSize = UInt64(dstMachHeader.size + dstMachHeader.totalCommandSize)
+                let srcCopyOffset = srcMachHeader.offset + srcSkipSize
+                let dstCopyOffset = dstMachHeader.offset + dstSkipSize
+                let srcCopySize = UInt32(srcTriple.arch.objectSize - srcSkipSize)
+                let dstCopySize = UInt32(dstTriple.arch.objectSize - dstSkipSize)
+
+                guard
+                    srcCopySize == dstCopySize
+                    else { throw Error.corrupt }
+
+                try _commitSlice(dstFH,
+                                 header: dstMachHeader,
+                                 commands: dstTriple.commands,
+                                 srcCopyOffset: srcCopyOffset,
+                                 dstCopyOffset: dstCopyOffset,
+                                 copySize: srcCopySize)
+            }
+
+        default:
+            throw Error.corrupt
+        }
+    }
+
+    public func commitUpdatesInPlace() throws {
+        guard
+            updatedHeader != nil
+            else { throw Error.notUpdating }
+    }
+
+    public func dump() {
+        switch header {
+        case let .single(machHeader, commands):
+            dump(machHeader)
+
+            for (index, command) in commands.enumerated() {
+                dump(command, UInt32(index))
+            }
+
+        case let .universal(fatHeader, triples):
+            dump(fatHeader)
+
+            for triple in triples {
+                dump(triple.arch)
+            }
+
+            for triple in triples {
+                dump(triple.header)
+
+                for (index, command) in triple.commands.enumerated() {
+                    dump(command, UInt32(index))
+                }
+            }
+        }
+    }
+
+    public func insertDylib(_ name: String,
+                            weakly: Bool = false,
+                            timestamp: UInt32 = 0,
+                            currentVersion: UInt32 = 0,
+                            compatibilityVersion: UInt32 = 0) throws {
+        guard
+            let dstHeader = updatedHeader
+            else { throw Error.notUpdating }
+
+        switch dstHeader {
+        case let .single(header, commands):
+            let (newHeader, newCommands) = try _insertDylib(header: header,
+                                                            commands: commands,
+                                                            name: name,
+                                                            weakly: weakly,
+                                                            timestamp: timestamp,
+                                                            currentVersion: currentVersion,
+                                                            compatibilityVersion: compatibilityVersion)
+
+            updatedHeader = .single(newHeader, newCommands)
+
+        case let .universal(header, triples):
+            updatedHeader = .universal(try header.copy(),
+                                       try triples.map { (try $0.arch.copy(),
+                                                          try $0.header.copy(),
+                                                          try $0.commands.map { try $0.copy() })
+                })
+        }
+
+    }
+
+    public func invalidate() {
+        fileHandle.closeFile()
+    }
+
+    public func removeCodeSignature() throws {
+        guard
+            updatedHeader != nil
+            else { throw Error.notUpdating }
+
+        switch header {
+        case let .single(machHeader, _):
+            return try _removeCodeSignature(machHeader)
+
+        case let .universal(fatHeader, _):
+            return try _removeCodeSignature(fatHeader)
+        }
+    }
+
+    // MARK: Internal Instance Properties
+
+    internal let fileHandle: FileHandle
 
     // MARK: Private Nested Types
 
     private enum Header {
-        case single(MachHeader)
-        case universal(FatHeader)
+        case single(MachHeader, [LoadCommand])
+        case universal(FatHeader, [Triple])
+    }
+
+    private typealias Triple = (arch: FatArch, header: MachHeader, commands: [LoadCommand])
+
+    // MARK: Private Initializers
+
+    private init(path: Path,
+                 isReadOnly: Bool,
+                 fileHandle: FileHandle,
+                 header: Header) {
+        self.fileHandle = fileHandle
+        self.header = header
+        self.isReadOnly = isReadOnly
+        self.path = path
     }
 
     // MARK: Private Instance Properties
 
-    private let fileHandle: FileHandle
-    private let magic: Magic
+    private let header: Header
 
-    private var didReadHeader = false
-    private var didReadLocalCommands = false
-    private var header: Header?
+    private var updatedHeader: Header?
 
     // MARK: Private Instance Methods
 
-    private func _readFatArch(at offset: UInt64,
-                              with magic: Magic) -> FatArch? {
-        let mhOffset: UInt64
-        let count: Int
-        let item: Any
+    private func _commitSlice(_ fileHandle: FileHandle,
+                              header: MachHeader,
+                              commands: [LoadCommand],
+                              srcCopyOffset: UInt64,
+                              dstCopyOffset: UInt64,
+                              copySize: UInt32) throws {
+        let dstFH = fileHandle
+        let srcFH = self.fileHandle
 
-        if magic.is64Bit {
-            count = MemoryLayout<fat_arch_64>.size
+        try dstFH.writeMachHeader(header)
+        try dstFH.writeLoadCommands(commands)
 
-            guard
-                let data = fileHandle.read(from: offset,
-                                           for: count),
-                let arch = data.extractFatArch64(magic.isSwapped)
-                else { return nil }
+        dstFH.truncateFile(atOffset: dstCopyOffset)
 
-            item = arch
-            mhOffset = arch.offset
+        try dstFH.copy(srcFH,
+                       from: srcCopyOffset,
+                       to: dstCopyOffset,
+                       for: copySize)
+    }
+
+    private func _containsDylib(_ name: String) -> Bool {
+        switch header {
+        case let .single(_, commands):
+            return _containsDylib(name, commands)
+
+        case let .universal(_, triples):
+            for triple in triples {
+                if _containsDylib(name, triple.commands) {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+
+    private func _containsDylib(_ name: String,
+                                _ commands: [LoadCommand]) -> Bool {
+        for command in commands {
+            switch command.kind {
+            case .LC_LOAD_DYLIB,
+                 .LC_LOAD_WEAK_DYLIB:
+                if let command = command as? DylibCommand,
+                    command.name == name {
+                    return true
+                }
+
+            default:
+                break
+            }
+        }
+
+        return false
+    }
+
+    private func _insertDylib(header: MachHeader,
+                              commands: [LoadCommand],
+                              name: String,
+                              weakly: Bool,
+                              timestamp: UInt32,
+                              currentVersion: UInt32,
+                              compatibilityVersion: UInt32) throws -> (MachHeader, [LoadCommand]) {
+        let lcsOffset = header.offset + UInt64(header.size)
+
+        var lcOffset: UInt64
+
+        if let lastCommand = commands.last {
+            lcOffset = lastCommand.offset + UInt64(lastCommand.size)
         } else {
-            count = MemoryLayout<fat_arch>.size
-
-            guard
-                let data = fileHandle.read(from: offset,
-                                           for: count),
-                let arch = data.extractFatArch(magic.isSwapped)
-                else { return nil }
-
-            item = arch
-            mhOffset = UInt64(arch.offset)
+            lcOffset = lcsOffset
         }
 
-        guard
-            let mhMagic = fileHandle.readMagic(at: mhOffset),
-            let header = _readMachHeader(at: mhOffset,
-                                         with: mhMagic)
-            else { return nil }
+        let dylibCommand = try _makeDylibCommand(offset: lcOffset,
+                                                 isSwapped: header.magic.isSwapped,
+                                                 name: name,
+                                                 weakly: weakly,
+                                                 timestamp: timestamp,
+                                                 currentVersion: currentVersion,
+                                                 compatibilityVersion: compatibilityVersion)
 
-        return FatArch(offset: offset,
-                       count: count,
-                       item: item,
-                       header: header)
-    }
+        var outCommands = commands
 
-    private func _readFatHeader(at offset: UInt64,
-                                with magic: Magic) -> FatHeader? {
-        let count = MemoryLayout<fat_header>.size
+        outCommands.append(dylibCommand)
 
-        guard
-            let data = fileHandle.read(from: 0,
-                                       for: count),
-            let item = data.extractFatHeader(magic.isSwapped)
-            else { return nil }
+        lcOffset += UInt64(dylibCommand.size)
 
-        var archOffset = UInt64(count)
-        var archs: [FatArch] = []
+        let lcsSize = UInt32(lcOffset - lcsOffset)
 
-        for _ in 1...item.nfat_arch {
-            guard
-                let arch = _readFatArch(at: archOffset,
-                                        with: magic)
-                else { return nil }
-
-            archs.append(arch)
-
-            archOffset += UInt64(arch.count)
+        if header.totalCommandSize < lcsSize {
+            header.totalCommandSize = lcsSize
         }
 
-        return FatHeader(magic: magic,
-                         offset: offset,
-                         count: count,
-                         item: item,
-                         archs: archs)
+        header.commandCount += 1
+
+        return (header, outCommands)
     }
 
-    private func _readHeader() {
-        guard
-            !didReadHeader
-            else { return }
+    private func _makeDylibCommand(offset: UInt64,
+                                   isSwapped: Bool,
+                                   name: String,
+                                   weakly: Bool,
+                                   timestamp: UInt32,
+                                   currentVersion: UInt32,
+                                   compatibilityVersion: UInt32) throws -> DylibCommand {
+        let kind: LoadCommand.Kind = weakly ? .LC_LOAD_WEAK_DYLIB : .LC_LOAD_DYLIB
+        let nameOffset = UInt32(MemoryLayout<dylib_command>.size)
+        let nameSize = (UInt32(name.utf8.count) & ~7) + 8
+        let commandSize = nameOffset + nameSize
+        let rawDylib = dylib(name: lc_str(offset: UInt32(nameOffset)),
+                             timestamp: timestamp,
+                             current_version: currentVersion,
+                             compatibility_version: compatibilityVersion)
+        var rawCommand = dylib_command(cmd: kind.rawValue,
+                                       cmdsize: commandSize,
+                                       dylib: rawDylib)
 
-        didReadHeader = true
-
-        if magic.isFat {
-            guard
-                let header = _readFatHeader(at: 0,
-                                            with: magic)
-                else { return }
-
-            self.header = .universal(header)
-        } else {
-            guard
-                let header = _readMachHeader(at: 0,
-                                             with: magic)
-                else { return }
-
-            self.header = .single(header)
-        }
-    }
-
-    private func _readLoadCommands(at offset: UInt64,
-                                   count: Int,
-                                   isSwapped: Bool) {
-        //        let lcSize = MemoryLayout<load_command>.size
-        //
-        //        var lcOffset = offset
-        //
-        //        for _ in 1...count {
-        //            guard
-        //                let lcData = _fileHandle.read(from: lcOffset,
-        //                                              for: lcSize),
-        //                let tmpCommand = lcData.extractLoadCommand(isSwapped),
-        //                let data = _fileHandle.read(from: lcOffset,
-        //                                            for: Int(tmpCommand.cmdsize)),
-        //                let command = LoadCommand.parse(data: data,
-        //                                                isSwapped: isSwapped)
-        //                else { break }
-        //
-        //            lcOffset += UInt64(command.size)
-        //        }
-    }
-
-    private func _readMachHeader(at offset: UInt64,
-                                 with magic: Magic) -> MachHeader? {
-        let count: Int
-        let item: Any
-
-        if magic.is64Bit {
-            count = MemoryLayout<mach_header_64>.size
-
-            guard
-                let data = fileHandle.read(from: offset,
-                                           for: count),
-                let header = data.extractMachHeader64(magic.isSwapped)
-                else { return nil }
-
-            item = header
-        } else {
-            count = MemoryLayout<mach_header>.size
-
-            guard
-                let data = fileHandle.read(from: offset,
-                                           for: count),
-                let header = data.extractMachHeader(magic.isSwapped)
-                else { return nil }
-
-            item = header
+        if isSwapped {
+            swap_dylib_command(&rawCommand, NX_UnknownByteOrder)
         }
 
-        return MachHeader(magic: magic,
-                          offset: offset,
-                          count: count,
-                          item: item)
+        let data = NSMutableData(bytes: &rawCommand,
+                                 length: Int(nameOffset))
+
+        if let nameData = name.data(using: .utf8) {
+            data.append(nameData)
+        }
+
+        if data.length < Int(commandSize) {
+            data.increaseLength(by: Int(commandSize) - data.length)
+        }
+
+        let item = try Item(dylib_command.self,
+                            offset: offset,
+                            data: data,
+                            isSwapped: isSwapped,
+                            swapper: swap_dylib_command)
+
+        return try DylibCommand(item: item)
+    }
+
+    private func _removeCodeSignature(_ header: FatHeader) throws {
+    }
+
+    private func _removeCodeSignature(_ header: MachHeader) throws {
     }
 }
